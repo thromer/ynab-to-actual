@@ -1,6 +1,8 @@
 # Helpful for nuances of interpreting data (e.g. category.category_group_name):
 # https://github.com/actualbudget/actual/blob/master/packages/loot-core/src/server/importers/ynab5.ts
 
+# TODO: make sure to take allowed fields approach not excluded fields approach.
+
 from ynab import (
     Account,
     BudgetDetail,
