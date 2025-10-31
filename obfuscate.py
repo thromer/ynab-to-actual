@@ -3,124 +3,177 @@
 
 # TODO: make sure to take allowed fields approach not excluded fields approach.
 
+import argparse
+import json
+import random
+import sys
+from pathlib import Path
+from typing import cast
+
 from ynab import (
     Account,
     BudgetDetail,
+    BudgetDetailResponse,
     Category,
     CategoryGroup,
     MonthDetail,
     Payee,
-    PayeeLocation,
-    ScheduledSubTransaction,
-    ScheduledTransactionSummary,
     SubTransaction,
     TransactionSummary,
 )
 
+from emojis import EMOJIS
 
-def main():
-    budget = BudgetDetail()
+
+CODEPOINT_RANGES = [(0x0020, 0xD800), (0xE000, 0xFDD0), (0xFDF0, 0xFFFE)]
+CODEPOINT_COUNT = sum([r[1] - r[0] for r in CODEPOINT_RANGES])
+
+
+def random_codepoint() -> int:
+    index = random.randrange(CODEPOINT_COUNT)
+    for start, end in CODEPOINT_RANGES:
+        rlen = end - start
+        if index < rlen:
+            return start + index
+        index -= rlen
+    msg = "Internal error, ran out of codepoints"
+    raise RuntimeError(msg)
+
+
+def random_str() -> str:
+    return random.choice(EMOJIS) + "".join(
+        chr(random_codepoint()) for _ in range(random.randrange(10, 100))
+    )
+
+
+def random_mills() -> int:
+    return random.randint(-5000 * 1000, 5000 * 1000)
+
+
+def obfuscate_account(a: Account) -> Account:
+    return Account(
+        id=a.id,
+        name=random_str(),
+        note=random_str(),
+        type=a.type,
+        on_budget=a.on_budget,
+        closed=a.closed,
+        balance=0,
+        cleared_balance=0,
+        uncleared_balance=0,
+        transfer_payee_id=a.transfer_payee_id,
+        deleted=a.deleted,
+    )
+
+
+def obfuscate_budget(b: BudgetDetail) -> BudgetDetail:
     if (
-        budget.first_month is None
-        or budget.last_month is None
-        or budget.accounts is None
-        or budget.payees is None
-        or budget.payee_locations is None
-        or budget.category_groups is None
-        or budget.categories is None
-        or budget.months is None
-        or budget.transactions is None
-        or budget.subtransactions is None
-        or budget.scheduled_transactions is None
-        or budget.scheduled_subtransactions is None
+        b.first_month is None
+        or b.last_month is None
+        or b.accounts is None
+        or b.payees is None
+        or b.payee_locations is None
+        or b.category_groups is None
+        or b.categories is None
+        or b.months is None
+        or b.transactions is None
+        or b.subtransactions is None
+        or b.scheduled_transactions is None
+        or b.scheduled_subtransactions is None
     ):
         msg = "budget is missing key fields"
         raise Exception(msg)
+    return BudgetDetail(
+        id=b.id,
+        name=random_str(),
+        accounts=[obfuscate_account(a) for a in b.accounts],
+        payees=[obfuscate_payee(p) for p in b.payees],
+        payee_locations=[],
+        category_groups=[obfuscate_category_group(g) for g in b.category_groups],
+        categories=[obfuscate_category(c) for c in b.categories],
+        months=[obfuscate_month(m) for m in b.months],
+        transactions=[obfuscate_transaction(t) for t in b.transactions],
+        subtransactions=[obfuscate_subtransaction(s) for s in b.subtransactions],
+    )
 
-    a: Account = budget.accounts[-1]
-    p: Payee = budget.payees[-1]
-    pl: PayeeLocation = budget.payee_locations[-1]
-    cg: CategoryGroup = budget.category_groups[-1]
-    c: Category = budget.categories[-1]
-    m: MonthDetail = budget.months[-1]
-    t: TransactionSummary = budget.transactions[-1]
-    st: SubTransaction = budget.subtransactions[-1]
-    s_t: ScheduledTransactionSummary = budget.scheduled_transactions[-1]
-    s_st: ScheduledSubTransaction = budget.scheduled_subtransactions[-1]
 
-    # obfuscate these
-    # Budget obf
-    # name
+def obfuscate_payee(p: Payee) -> Payee:
+    return Payee(id=p.id, name=random_str(), deleted=p.deleted)
 
-    # Account obf:
-    # name
-    # note
 
-    # Account del, ignored by importer:
-    # balance
-    # cleared_balance
-    # uncleared_balance
-    # debt_original_balance
-    # debt_interest_rates
-    # debt_minimum_payments
-    # debt_escrow_amounts
-    # last_reconciled_at
+def obfuscate_category_group(g: CategoryGroup) -> CategoryGroup:
+    return CategoryGroup(id=g.id, name=random_str(), hidden=g.hidden, deleted=g.deleted)
 
-    # Payee obf:
-    # name
 
-    # PayeeLocation del: budget.payee_locations = []
+def obfuscate_category(c: Category) -> Category:
+    return Category(
+        id=c.id,
+        category_group_id=c.category_group_id,
+        name=random_str(),
+        note=random_str(),
+        hidden=c.hidden,
+        budgeted=random_mills(),
+        activity=0,
+        balance=0,
+        deleted=c.deleted,
+    )
 
-    # CategoryGroup obf:
-    # name
 
-    # Category: obf
-    # name
-    # note
-    # budgeted
+def obfuscate_month(m: MonthDetail) -> MonthDetail:
+    return MonthDetail(
+        month=m.month,
+        note=random_str(),
+        income=random_mills(),
+        budgeted=random_mills(),
+        activity=random_mills(),
+        to_be_budgeted=0,
+        deleted=m.deleted,
+        categories=[obfuscate_category(c) for c in m.categories],
+    )
 
-    # Cateory: del
-    # category_group_name = None
-    # activity = 0
-    # balance = 0
-    # goal_creation_month = None
-    # goal_target = None
-    # goal_target_month = None
-    # goal_percentage_complete = None
-    # goal_months_to_budget = None
-    # goal_under_funded = None
-    # goal_overall_funded = None
-    # goal_overall_left = None
-    # goal_snoozed_at = None
 
-    # MonthDetail obf
-    # note
-    # budgeted
-    # income
-    # activity
+def obfuscate_transaction(t: TransactionSummary) -> TransactionSummary:
+    return TransactionSummary(
+        id=t.id,
+        date=t.var_date,
+        amount=random_mills(),
+        memo=random_str(),
+        cleared=t.cleared,
+        approved=t.approved,
+        account_id=t.account_id,
+        deleted=t.deleted,
+    )
 
-    # MonthDetail del
-    # activity = 0
-    # to_be_budgeted = 0
-    # age_of_money = None
 
-    # TransactionSummary: obf
-    # amount
-    # memo
+def obfuscate_subtransaction(s: SubTransaction) -> SubTransaction:
+    return SubTransaction(
+        id=s.id,
+        transaction_id=s.transaction_id,
+        amount=random_mills(),
+        memo=random_str(),
+        deleted=s.deleted,
+    )
 
-    # TransactionSummary: del
-    # flag_color = None
-    # flag_name = None
-    # import_payee_name = None
-    # import_payee_name_original = None
 
-    # SubTransaction: obf
-    # amount
-    # memo
+def main(argv: list[str]):
+    parser = argparse.ArgumentParser()
+    _ = parser.add_argument("--input", "-i", default="ynab-json/budget-in.json")
+    _ = parser.add_argument("--output", "-o", default="ynab-json/budget-out.json")
+    args = parser.parse_args(argv)
+    input_path = Path(cast(str, args.input))
+    output_path = Path(cast(str, args.output))
 
-    # SubTransaction: del
-    # payee_name = None
-    # category_name = None
+    with input_path.open("r") as f:
+        budget_detail_response = BudgetDetailResponse.from_dict(json.load(f))  # pyright: ignore[reportAny]
+    if budget_detail_response is None:
+        msg = "Bad JSON"
+        raise RuntimeError(msg)
+    budget_in = budget_detail_response.data.budget
+    budget_out = obfuscate_budget(budget_in)
+    _ = output_path.write_text(
+        budget_out.model_dump_json(by_alias=True, exclude_unset=True, indent=2)
+    )
 
-    # ScheduledTransactionSummary del: budget.scheduled_transactions = []
-    # ScheduledSubTransaction del: budget.scheduled_subtransactions = []
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
