@@ -84,6 +84,7 @@ def main(argv: list[str]):
         or budget.last_month is None
         or budget.accounts is None
         or budget.payees is None
+        or budget.payee_locations is None
         or budget.category_groups is None
         or budget.categories is None
         or budget.months is None
@@ -201,7 +202,7 @@ def main(argv: list[str]):
             deleted=False,
             payee_id=fake_payee_id,
             category_id=inflow_category_id,
-            memo="Balance Forward",
+            memo="Balance forward",
         )
         for account_id, amount in deleted_amounts.items()
         if amount != 0
