@@ -30,7 +30,7 @@ def account_names_to_ids(
             missing.append(a)
     if missing:
         message = f"No such account(s): {missing}"
-        raise Exception(message)
+        raise RuntimeError(message)
     return set([a.id for a in account_name_dict.values() if a.name in account_names])
 
 
@@ -70,14 +70,14 @@ def main(argv: list[str]):
     )
     if bool(target_account_names) and bool(exclude_account_names):
         msg = "Specify at most one of --accounts or --exclude"
-        raise Exception(msg)
+        raise RuntimeError(msg)
     drop = cast(bool, args.drop)
 
     with input_path.open("r") as f:
         budget_detail_response = BudgetDetailResponse.from_dict(json.load(f))  # pyright: ignore[reportAny]
     if budget_detail_response is None:
         msg = "Bad JSON"
-        raise Exception(msg)
+        raise RuntimeError(msg)
     budget = budget_detail_response.data.budget
     if (
         budget.first_month is None
@@ -94,7 +94,7 @@ def main(argv: list[str]):
         or budget.scheduled_subtransactions is None
     ):
         msg = "budget is missing key fields"
-        raise Exception(msg)
+        raise RuntimeError(msg)
     accounts = budget.accounts
     payees = budget.payees
     category_groups = budget.category_groups
@@ -154,14 +154,14 @@ def main(argv: list[str]):
     fake_payee_ids = [p.id for p in payees if p.name == "Fake"]
     if len(fake_payee_ids) != 1:
         msg = f"Wrong number of Fake payees {len(fake_payee_ids)}"
-        raise Exception(msg)
+        raise RuntimeError(msg)
     fake_payee_id = fake_payee_ids[0]
     inflow_category_ids = [
         c.id for c in categories if c.name == "Inflow: Ready to Assign"
     ]
     if len(inflow_category_ids) != 1:
         msg = f"Wrong number of Fake payees {len(inflow_category_ids)}"
-        raise Exception(msg)
+        raise RuntimeError(msg)
     inflow_category_id = inflow_category_ids[0]
     for t in transactions:
         if t.id not in ftdict:
