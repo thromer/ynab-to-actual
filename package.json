@@ -1,0 +1,25 @@
+{
+  "name": "ynab-to-actual",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "scripts": {
+    "build": "yarn lint && tsc",
+    "import": "yarn build && node dist/import.js",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix"
+  },
+  "packageManager": "yarn@4.12.0",
+  "dependencies": {
+    "@actual-app/api": "^25.12.0",
+    "commander": "^14.0.1",
+    "typescript": "^5.9.2",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "@types/node": "^24.3.1",
+    "eslint": "^9.35.0",
+    "ts-node": "^10.9.2",
+    "typescript-eslint": "^8.43.0"
+  }
+}
