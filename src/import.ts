@@ -502,6 +502,8 @@ async function importBudgets(
 // Utils
 
 async function doImport(data: YNAB5.Budget) {
+  throw new Error("not implemented need to avoid just adding everything unconditionally!");
+  // @ts-expect-error: TODO
   const entityIdMap = new Map<string, string>();
 
   console.log('Importing Accounts...');

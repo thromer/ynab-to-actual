@@ -1,3 +1,5 @@
+# For importing the complement of the set of stuff imported by example.py
+
 import argparse
 import json
 import sys
@@ -8,17 +10,14 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from operator import itemgetter
 from pathlib import Path
-from uuid import uuid4
 
-from ynab import (
-    Account,
-    BudgetDetailResponse,
-    TransactionClearedStatus,
-    TransactionSummary,
-)
+from ynab import Account, BudgetDetailResponse
+
+
+INVERSE = True  # TODO: flag
 
 
 def account_names_to_ids(
@@ -39,39 +38,19 @@ def main(argv: list[str]):
     _ = parser.add_argument("--input", "-i", default="ynab-json/budget-in.json")
     _ = parser.add_argument("--output", "-o", default="ynab-json/budget-out.json")
     _ = parser.add_argument(
-        "--start", "-s", required=True, help="Start date in YYYY-MM-DD format"
+        "--end", "-e", required=True, help="End date in YYYY-MM-DD format"
     )
     _ = parser.add_argument(
-        "--accounts",
-        "-a",
+        "--drop",
+        "-d",
         default="",
-        help="Comma-separated list of account names to filter. If omitted filters all accounts",
+        help="Comma-separated list of account names to drop.",
     )
-    _ = parser.add_argument(
-        "--exclude",
-        "-x",
-        default="",
-        help="Comma-separated list of account names to exclude from filtering.",
-    )
-    _ = parser.add_argument(
-        "--drop", "-d", action="store_true", help="Drop accounts with no transactions"
-    )
-    _ = parser.add_argument("--unapproved_prefix", "-u", default="#review")
     args = parser.parse_args(argv)
     input_path = Path(cast(str, args.input))
     output_path = Path(cast(str, args.output))
-    start = datetime.strptime(cast(str, args.start), "%Y-%m-%d").date()
-    unapproved_prefix = cast(str, args.unapproved_prefix).strip()
-    target_account_names = set(
-        [a.strip() for a in cast(str, args.accounts).split(",") if a]
-    )
-    exclude_account_names = set(
-        [a.strip() for a in cast(str, args.exclude).split(",") if a]
-    )
-    if bool(target_account_names) and bool(exclude_account_names):
-        msg = "Specify at most one of --accounts or --exclude"
-        raise RuntimeError(msg)
-    drop = cast(bool, args.drop)
+    end = datetime.strptime(cast(str, args.end), "%Y-%m-%d").date()
+    drop_account_names = set([a.strip() for a in cast(str, args.drop).split(",") if a])
 
     with input_path.open("r") as f:
         budget_detail_response = BudgetDetailResponse.from_dict(json.load(f))  # pyright: ignore[reportAny]
@@ -105,12 +84,7 @@ def main(argv: list[str]):
     scheduled_transactions = budget.scheduled_transactions
     scheduled_subtransactions = budget.scheduled_subtransactions
     account_name_dict = {a.name: a for a in accounts}
-    target_accounts = account_names_to_ids(account_name_dict, target_account_names)
-    exclude_accounts = account_names_to_ids(account_name_dict, exclude_account_names)
-    if not target_accounts:
-        keep_accounts = exclude_accounts
-    else:
-        keep_accounts = set([a.id for a in accounts if a.id not in target_accounts])
+    drop_accounts = account_names_to_ids(account_name_dict, drop_account_names)
 
     # For stats only (AFAIK)
     adict = {a.id: a for a in accounts}
@@ -136,54 +110,29 @@ def main(argv: list[str]):
     print(f"{len(subtransactions)=}")
     print(f"{len(scheduled_transactions)=}")
     print(f"{len(scheduled_subtransactions)=}")
-    # print(budget.months[-1].model_dump_json(by_alias=True, exclude_unset=True, indent=2))
+    print(f"First month in list={budget.months[0].month}")
     print(f"Last month in list={budget.months[-1].month}")
     print(transactions[-1].model_dump_json(by_alias=True, exclude_unset=True, indent=2))
-    # print(subtransactions[0].model_dump_json(by_alias=True, exclude_unset=True, indent=2))
 
     filtered_transactions = [
-        t for t in transactions if t.account_id in keep_accounts or t.var_date >= start
+        t
+        for t in transactions
+        if t.account_id not in drop_accounts and t.var_date <= end
     ]
-    if unapproved_prefix:
-        for t in filtered_transactions:
-            if not t.approved:
-                orig_memo = (t.memo or "").strip()
-                t.memo = f"{unapproved_prefix}{f' {orig_memo}' if orig_memo else ''}"
     ftdict = {t.id: t for t in filtered_transactions}
-    deleted_amounts: defaultdict[str, int] = defaultdict(int)
-    fake_payee_ids = [p.id for p in payees if p.name == "Fake"]
-    if len(fake_payee_ids) != 1:
-        msg = f"Wrong number of Fake payees {len(fake_payee_ids)}"
-        raise RuntimeError(msg)
-    fake_payee_id = fake_payee_ids[0]
-    inflow_category_ids = [
-        c.id for c in categories if c.name == "Inflow: Ready to Assign"
-    ]
-    if len(inflow_category_ids) != 1:
-        msg = f"Wrong number of inflow categories {len(inflow_category_ids)}"
-        raise RuntimeError(msg)
-    inflow_category_id = inflow_category_ids[0]
-    for t in transactions:
-        if t.id not in ftdict:
-            deleted_amounts[t.account_id] += t.amount
     filtered_subtransactions = [
         s for s in subtransactions if s.transaction_id in ftdict
     ]
     filtered_payee_ids = set(
-        [fake_payee_id]
-        + [t.payee_id for t in filtered_transactions if t.payee_id is not None]
+        [t.payee_id for t in filtered_transactions if t.payee_id is not None]
         + [s.payee_id for s in filtered_subtransactions if s.payee_id is not None]
     )
     filtered_payees = [p for p in payees if p.id in filtered_payee_ids]
-    filtered_months = [m for m in months if m.month >= start]
-
-    if drop:
-        ftcount: defaultdict[str, int] = defaultdict(int)
-        for t in filtered_transactions:
-            ftcount[t.account_id] += 1
-        filtered_accounts = [a for a in accounts if ftcount[a.id] > 0]
-    else:
-        filtered_accounts = accounts
+    filtered_months = [m for m in months if m.month <= end]
+    ftcount: defaultdict[str, int] = defaultdict(int)
+    for t in filtered_transactions:
+        ftcount[t.account_id] += 1
+    filtered_accounts = [a for a in accounts if ftcount[a.id] > 0]
 
     print(f"{len(filtered_accounts)=}")
     print(f"{len(filtered_transactions)=}")
@@ -191,37 +140,13 @@ def main(argv: list[str]):
     print(f"{len(filtered_payees)=}")
     print(f"{len(filtered_months)=}")
 
-    balance_forward_transactions = [
-        TransactionSummary(
-            id=str(uuid4()),
-            date=start - timedelta(days=1),
-            amount=amount,
-            cleared=TransactionClearedStatus.RECONCILED,
-            approved=True,
-            account_id=account_id,
-            deleted=False,
-            payee_id=fake_payee_id,
-            category_id=inflow_category_id,
-            memo="Balance forward",
-        )
-        for account_id, amount in deleted_amounts.items()
-        if amount != 0
-    ]
-
-    budget.first_month = max(
-        filtered_months[-1].month, date(start.year, start.month, 1)
-    )
+    budget.last_month = min(filtered_months[0].month, date(end.year, end.month, 1))
     budget.accounts = filtered_accounts
-    budget.transactions = filtered_transactions + balance_forward_transactions
+    budget.transactions = filtered_transactions
     budget.subtransactions = filtered_subtransactions
     budget.payees = filtered_payees
     budget.months = filtered_months
     # print(json.dumps(sorted([p.name for p in filtered_payees]), indent=2))
-    for t in balance_forward_transactions:
-        print(
-            adict[t.account_id].name,
-            t.model_dump_json(by_alias=True, exclude_unset=True, indent=2),
-        )
 
     _ = output_path.write_text(
         budget_detail_response.model_dump_json(
