@@ -1,15 +1,9 @@
-// @ts-strict-ignore
-// This is a special usage of the API because this package is embedded
-// into Actual itself. We only want to pull in the methods in that
-// case and ignore everything else; otherwise we'd be pulling in the
-// entire backend bundle from the API
-import { send } from '@actual-app/api/injected';
-import * as actual from '@actual-app/api/methods';
+import *  as actual from '@actual-app/api';
+import { ImportTransactionEntity } from '@actual-app/api/@types/loot-core/src/types/models';
 import { v4 as uuidv4 } from 'uuid';
 
-import { logger } from '../../platform/server/log';
-import * as monthUtils from '../../shared/months';
-import { sortByKey, groupBy } from '../../shared/util';
+import * as monthUtils from './months';
+import { sortByKey, groupBy } from './util';
 
 import * as YNAB5 from './ynab5-types';
 
@@ -42,10 +36,10 @@ async function importCategories(
   // so it's already handled.
 
   const categories = await actual.getCategories();
-  const incomeCatId = findIdByName(categories, 'Income');
+  const incomeCatId = findIdByName(categories, 'Income') as string;
   const ynabIncomeCategories = ['To be Budgeted', 'Inflow: Ready to Assign'];
 
-  function checkSpecialCat(cat) {
+  function checkSpecialCat(cat: YNAB5.Category) {
     if (
       cat.category_group_id ===
       findIdByName(data.category_groups, 'Internal Master Category')
@@ -69,6 +63,7 @@ async function importCategories(
     ) {
       return 'income';
     }
+    return undefined;
   }
   // Can't be done in parallel to have
   // correct sort order.
@@ -96,7 +91,8 @@ async function importCategories(
             });
             entityIdMap.set(group.id, groupId);
             if (group.note) {
-              send('notes-save', { id: groupId, note: group.note });
+              console.log(`Warning: dropping note for category group ${group.name}`);
+              // send('notes-save', { id: groupId, note: group.note });
             }
             run = false;
           } catch (e) {
@@ -104,7 +100,7 @@ async function importCategories(
             count += 1;
             if (count >= MAX_RETRY) {
               run = false;
-              throw Error(e.message);
+              throw Error(e instanceof Error ? e.message : String(e));
             }
           }
         }
@@ -142,12 +138,13 @@ async function importCategories(
                 try {
                   const id = await actual.createCategory({
                     name: cat.name,
-                    group_id: groupId,
+                    group_id: groupId as string,
                     hidden: cat.hidden,
                   });
                   entityIdMap.set(cat.id, id);
                   if (cat.note) {
-                    send('notes-save', { id, note: cat.note });
+                    console.log(`Warning: dropping note for category ${cat.name}`);
+                    // send('notes-save', { id, note: cat.note });
                   }
                   run = false;
                 } catch (e) {
@@ -155,7 +152,7 @@ async function importCategories(
                   count += 1;
                   if (count >= MAX_RETRY) {
                     run = false;
-                    throw Error(e.message);
+                    throw Error(e instanceof Error ? e.message : String(e));
                   }
                 }
               }
@@ -187,7 +184,7 @@ async function importTransactions(
   const payees = await actual.getPayees();
   const categories = await actual.getCategories();
   const incomeCatId = findIdByName(categories, 'Income');
-  const startingBalanceCatId = findIdByName(categories, 'Starting Balances'); //better way to do it?
+  const startingBalanceCatId = findIdByName(categories, 'Starting Balances') as string; //better way to do it?
 
   const startingPayeeYNAB = findIdByName(data.payees, 'Starting Balance');
 
@@ -229,11 +226,12 @@ async function importTransactions(
       !transaction.transfer_transaction_id
     ) {
       const key =
-        transaction.account_id + '#' + transaction.transfer_account_id;
-      if (!orphanTransferMap.has(key)) {
+            transaction.account_id + '#' + transaction.transfer_account_id;
+      const orphans = orphanTransferMap.get(key);
+      if (orphans === undefined) {
         orphanTransferMap.set(key, [transaction]);
       } else {
-        orphanTransferMap.get(key).push(transaction);
+        orphans.push(transaction);
       }
     }
 
@@ -254,11 +252,12 @@ async function importTransactions(
       const key =
         subtransaction.transfer_account_id +
         '#' +
-        orphanSubtransferAcctIdByTrxIdMap.get(subtransaction.transaction_id);
-      if (!map.has(key)) {
+          orphanSubtransferAcctIdByTrxIdMap.get(subtransaction.transaction_id);
+      const orphans = map.get(key)
+      if (orphans === undefined) {
         map.set(key, [subtransaction]);
       } else {
-        map.get(key).push(subtransaction);
+        orphans.push(subtransaction);
       }
       return map;
     },
@@ -279,11 +278,11 @@ async function importTransactions(
     const date_a =
       'date' in a
         ? a.date
-        : orphanSubtransferDateByTrxIdMap.get(a.transaction_id);
+        : orphanSubtransferDateByTrxIdMap.get(a.transaction_id) as string;
     const date_b =
       'date' in b
         ? b.date
-        : orphanSubtransferDateByTrxIdMap.get(b.transaction_id);
+        : orphanSubtransferDateByTrxIdMap.get(b.transaction_id) as string;
     // A transaction and the related subtransaction have inverted amounts.
     // To have those in the same order, the subtransaction has to be reversed
     // to have the same amount.
@@ -312,22 +311,21 @@ async function importTransactions(
       let transactionIdx = 0;
       let subtransactionIdx = 0;
       do {
+        const t = transactions[transactionIdx] as YNAB5.Transaction;
+        const s = subtransactions[subtransactionIdx] as YNAB5.Subtransaction;
         switch (
-          orphanTransferComparator(
-            transactions[transactionIdx],
-            subtransactions[subtransactionIdx],
-          )
+          orphanTransferComparator(t, s)
         ) {
           case 0:
             // The current list indexes are matching: the transaction and
             // subtransaction are related (same date, amount and memo)
             orphanTrxIdSubtrxIdMap.set(
-              transactions[transactionIdx].id,
-              entityIdMap.get(subtransactions[subtransactionIdx].id),
+              t.id,
+              entityIdMap.get(s.id) as string,
             );
             orphanTrxIdSubtrxIdMap.set(
-              subtransactions[subtransactionIdx].id,
-              entityIdMap.get(transactions[transactionIdx].id),
+              s.id,
+              entityIdMap.get(t.id) as string,
             );
             transactionIdx++;
             subtransactionIdx++;
@@ -356,7 +354,7 @@ async function importTransactions(
 
   await Promise.all(
     [...transactionsGrouped.keys()].map(async accountId => {
-      const transactions = transactionsGrouped.get(accountId);
+      const transactions = transactionsGrouped.get(accountId) as YNAB5.Transaction[];
 
       const toImport = transactions
         .map(transaction => {
@@ -402,32 +400,34 @@ async function importTransactions(
           // Handle transactions and subtransactions payee
           const transactionPayeeUpdate = (
             trx: YNAB5.Transaction | YNAB5.Subtransaction,
-            newTrx,
+            newTrx: Omit<ImportTransactionEntity, 'account'>,
           ) => {
             if (trx.transfer_account_id) {
               const mappedTransferAccountId = entityIdMap.get(
                 trx.transfer_account_id,
-              );
+              ) as string;
+	      // @ts-expect-error: fast and loose
               newTrx.payee = payeeTransferAcctHashMap.get(
-                mappedTransferAccountId,
+                mappedTransferAccountId
               )?.id;
             } else {
-              newTrx.payee = entityIdMap.get(trx.payee_id);
+              newTrx.payee = entityIdMap.get(trx.payee_id) as string;
+	      // @ts-expect-error: fast and loose
               newTrx.imported_payee = data.payees.find(
                 p => !p.deleted && p.id === trx.payee_id,
               )?.name;
             }
           };
 
+	  // @ts-expect-error: fast and loose
           transactionPayeeUpdate(transaction, newTransaction);
-          if (newTransaction.subtransactions) {
-            subtransactions.forEach(subtrans => {
-              const newSubtransaction = newTransaction.subtransactions.find(
-                newSubtrans => newSubtrans.id === entityIdMap.get(subtrans.id),
-              );
-              transactionPayeeUpdate(subtrans, newSubtransaction);
-            });
-          }
+          newTransaction.subtransactions?.forEach(subtrans => {
+            const newSubtransaction = newTransaction.subtransactions?.find(
+              newSubtrans => newSubtrans.id === entityIdMap.get(subtrans.id as string),
+            );
+	    // @ts-expect-error: fast and loose
+            transactionPayeeUpdate(subtrans, newSubtransaction);
+          });
 
           // Handle starting balances
           if (
@@ -441,7 +441,8 @@ async function importTransactions(
         })
         .filter(x => x);
 
-      await actual.addTransactions(entityIdMap.get(accountId), toImport, {
+      // @ts-expect-error: fast and loose
+      await actual.addTransactions(entityIdMap.get(accountId) as string, toImport, {
         learnCategories: true,
       });
     }),
@@ -500,22 +501,22 @@ async function importBudgets(
 export async function doImport(data: YNAB5.Budget) {
   const entityIdMap = new Map<string, string>();
 
-  logger.log('Importing Accounts...');
+  console.log('Importing Accounts...');
   await importAccounts(data, entityIdMap);
 
-  logger.log('Importing Categories...');
+  console.log('Importing Categories...');
   await importCategories(data, entityIdMap);
 
-  logger.log('Importing Payees...');
+  console.log('Importing Payees...');
   await importPayees(data, entityIdMap);
 
-  logger.log('Importing Transactions...');
+  console.log('Importing Transactions...');
   await importTransactions(data, entityIdMap);
 
-  logger.log('Importing Budgets...');
+  console.log('Importing Budgets...');
   await importBudgets(data, entityIdMap);
 
-  logger.log('Setting up...');
+  console.log('Setting up...');
 }
 
 export function parseFile(buffer: Buffer): YNAB5.Budget {
