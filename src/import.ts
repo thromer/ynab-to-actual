@@ -1,9 +1,12 @@
+import { FileHandle, mkdir, readFile } from 'fs/promises';
 import *  as actual from '@actual-app/api';
 import { ImportTransactionEntity } from '@actual-app/api/@types/loot-core/src/types/models';
 import { v4 as uuidv4 } from 'uuid';
 
 import * as monthUtils from './months';
 import { sortByKey, groupBy } from './util';
+
+import { Command } from 'commander';
 
 import * as YNAB5 from './ynab5-types';
 
@@ -498,7 +501,7 @@ async function importBudgets(
 
 // Utils
 
-export async function doImport(data: YNAB5.Budget) {
+async function doImport(data: YNAB5.Budget) {
   const entityIdMap = new Map<string, string>();
 
   console.log('Importing Accounts...');
@@ -516,10 +519,10 @@ export async function doImport(data: YNAB5.Budget) {
   console.log('Importing Budgets...');
   await importBudgets(data, entityIdMap);
 
-  console.log('Setting up...');
+  console.log('... import complete!');
 }
 
-export function parseFile(buffer: Buffer): YNAB5.Budget {
+function parseFile(buffer: Buffer): YNAB5.Budget {
   let data = JSON.parse(buffer.toString());
   if (data.data) {
     data = data.data;
@@ -529,10 +532,6 @@ export function parseFile(buffer: Buffer): YNAB5.Budget {
   }
 
   return data;
-}
-
-export function getBudgetName(_filepath: string, data: YNAB5.Budget) {
-  return data.budget_name || data.name;
 }
 
 function equalsIgnoreCase(stringa: string, stringb: string): boolean {
@@ -556,3 +555,76 @@ function findIdByName<T extends { id: string; name: string }>(
 ) {
   return findByNameIgnoreCase<T>(categories, name)?.id;
 }
+
+interface ActualCredentials {
+  host: string;
+  server_password: string;
+  encryption_password: string;
+}
+
+interface Credentials {
+  actual: ActualCredentials
+}
+
+// TODO: inline me
+async function readJsonFile<T>(infile: string | FileHandle): Promise<T> {
+  try {
+    const fileContent = await readFile(infile, 'utf-8');
+    return JSON.parse(fileContent);
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`Failed to read JSON file: ${error.message}`);
+    }
+    throw error;
+  }
+}
+
+async function getSyncId(budgetName: string): Promise<string> {
+  const budgets = await actual.getBudgets();
+  const syncIds = new Set(budgets.filter(b => b.name === budgetName).map(b => b.groupId));
+  if (syncIds.size == 0) {
+    throw new Error(`Budget '${budgetName}' not found`);
+  }
+  if (syncIds.size > 1) {
+    throw new Error(`Multiple budgets named '${budgetName}' `);
+  }
+  return Array.from(syncIds)[0] as string;
+}
+
+async function withActual(budgetName: string, body: () => Promise<void>): Promise<void> {
+  const configDir = process.env['HOME'] + '/.config/actual';
+  let creds;
+  try {
+    creds = await readJsonFile(configDir + '/credentials.json') as Credentials;
+  } catch (error) {
+    console.error('Error:', error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+  const dataDir = configDir + '/cache';
+  await mkdir(dataDir, { recursive: true });
+  const config = {
+    dataDir: dataDir,
+    serverURL: creds.actual.host,
+    password: creds.actual.server_password
+  };
+  await actual.init(config);
+
+  await actual.downloadBudget(await getSyncId(budgetName));
+  await body()
+  await actual.shutdown();
+}
+
+const program = new Command();
+program
+  .version('1.0.0')
+  .description('partial nYNAB import')
+  .requiredOption('-b, --budget <str>', 'Budget name')
+  .requiredOption('-f, --file <str>', 'Input JSON file')
+  .action(async (options: {budget: string, file: string}) => {
+    const ynab = parseFile(Buffer.from(await readFile(options.file, 'binary')));
+    withActual(options.budget, async () => {
+      doImport(ynab);
+    });
+  });
+
+program.parse(process.argv);
