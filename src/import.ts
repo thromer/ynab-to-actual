@@ -1,3 +1,4 @@
+// Based on https://github.com/actualbudget/actual/blob/master/packages/loot-core/src/server/importers/ynab5.ts
 import { FileHandle, mkdir, readFile } from 'fs/promises';
 import *  as actual from '@actual-app/api';
 import { ImportTransactionEntity } from '@actual-app/api/@types/loot-core/src/types/models';
@@ -16,19 +17,21 @@ function amountFromYnab(amount: number) {
   return Math.round(amount / 10);
 }
 
-function importAccounts(data: YNAB5.Budget, entityIdMap: Map<string, string>) {
-  return Promise.all(
-    data.accounts.map(async account => {
-      if (!account.deleted) {
-        const id = await actual.createAccount({
-          name: account.name,
-          offbudget: account.on_budget ? false : true,
-          closed: account.closed,
+async function importOrMapAccounts(data: YNAB5.Budget, entityIdMap: Map<string, string>) {
+  const byName = new Map((await actual.getAccounts()).map(a => [a.name, a]));
+  data.accounts.map(async ynabAccount => {
+    if (!ynabAccount.deleted) {
+      let actualAccountId = byName.get(ynabAccount.name)?.id;
+      if (!actualAccountId) {
+        actualAccountId = await actual.createAccount({
+          name: ynabAccount.name,
+          offbudget: ynabAccount.on_budget ? false : true,
+          closed: ynabAccount.closed,
         });
-        entityIdMap.set(account.id, id);
       }
-    }),
-  );
+      entityIdMap.set(ynabAccount.id, actualAccountId);
+    }
+  });
 }
 
 async function importCategories(
@@ -45,7 +48,7 @@ async function importCategories(
   function checkSpecialCat(cat: YNAB5.Category) {
     if (
       cat.category_group_id ===
-      findIdByName(data.category_groups, 'Internal Master Category')
+        findIdByName(data.category_groups, 'Internal Master Category')
     ) {
       if (
         ynabIncomeCategories.some(ynabIncomeCategory =>
@@ -58,7 +61,7 @@ async function importCategories(
       }
     } else if (
       cat.category_group_id ===
-      findIdByName(data.category_groups, 'Credit Card Payments')
+        findIdByName(data.category_groups, 'Credit Card Payments')
     ) {
       return 'creditCard';
     } else if (
@@ -68,9 +71,9 @@ async function importCategories(
     }
     return undefined;
   }
-  // Can't be done in parallel to have
-  // correct sort order.
 
+  // Can't be done in parallel to have correct sort order. (Probably not true for import.ts.)
+  const groupsByName = new Map((await actual.getCategoryGroups()).map(g => [g.name, g]));
   for (const group of data.category_groups) {
     if (!group.deleted) {
       let groupId;
@@ -79,35 +82,14 @@ async function importCategories(
         !equalsIgnoreCase(group.name, 'Internal Master Category') &&
         !equalsIgnoreCase(group.name, 'Credit Card Payments') &&
         !equalsIgnoreCase(group.name, 'Hidden Categories') &&
-        !equalsIgnoreCase(group.name, 'Income')
+          !equalsIgnoreCase(group.name, 'Income')
       ) {
-        let run = true;
-        const MAX_RETRY = 10;
-        let count = 1;
-        const origName = group.name;
-        while (run) {
-          try {
-            groupId = await actual.createCategoryGroup({
-              name: group.name,
-              is_income: false,
-              hidden: group.hidden,
-            });
-            entityIdMap.set(group.id, groupId);
-            if (group.note) {
-              console.log(`Warning: dropping note for category group ${group.name}`);
-              // send('notes-save', { id: groupId, note: group.note });
-            }
-            run = false;
-          } catch (e) {
-            group.name = origName + '-' + count.toString();
-            count += 1;
-            if (count >= MAX_RETRY) {
-              run = false;
-              throw Error(e instanceof Error ? e.message : String(e));
-            }
+          groupId = groupsByName.get(group.name)?.id;
+          if (!groupId) {
+            throw new Error(`Category group ${group.name} not found in Actual`);
           }
+          entityIdMap.set(group.id, groupId);
         }
-      }
 
       if (equalsIgnoreCase(group.name, 'Income')) {
         groupId = incomeCatId;
@@ -118,6 +100,7 @@ async function importCategories(
         cat => cat.category_group_id === group.id,
       );
 
+      const actualCatsByName = new Map(categories.map(c => [c.name, c]));
       for (const cat of cats.reverse()) {
         if (!cat.deleted) {
           // Handles special categories. Starting balance is a payee
@@ -133,32 +116,11 @@ async function importCategories(
             case 'internal': // uncategorized is ignored too, handled by actual
               break;
             default: {
-              let run = true;
-              const MAX_RETRY = 10;
-              let count = 1;
-              const origName = cat.name;
-              while (run) {
-                try {
-                  const id = await actual.createCategory({
-                    name: cat.name,
-                    group_id: groupId as string,
-                    hidden: cat.hidden,
-                  });
-                  entityIdMap.set(cat.id, id);
-                  if (cat.note) {
-                    console.log(`Warning: dropping note for category ${cat.name}`);
-                    // send('notes-save', { id, note: cat.note });
-                  }
-                  run = false;
-                } catch (e) {
-                  cat.name = origName + '-' + count.toString();
-                  count += 1;
-                  if (count >= MAX_RETRY) {
-                    run = false;
-                    throw Error(e instanceof Error ? e.message : String(e));
-                  }
-                }
+              const id = actualCatsByName.get(cat.name)?.id;
+              if (!id) {
+                throw new Error(`Category ${cat.name} not found in Actual`);
               }
+              entityIdMap.set(cat.id, id);
             }
           }
         }
@@ -167,17 +129,19 @@ async function importCategories(
   }
 }
 
-function importPayees(data: YNAB5.Budget, entityIdMap: Map<string, string>) {
-  return Promise.all(
-    data.payees.map(async payee => {
-      if (!payee.deleted) {
-        const id = await actual.createPayee({
-          name: payee.name,
+async function importOrMapPayees(data: YNAB5.Budget, entityIdMap: Map<string, string>) {
+  const byName = new Map((await actual.getPayees()).map(a => [a.name, a]));
+  data.payees.map(async ynabPayee => {
+    if (!ynabPayee.deleted) {
+      let actualPayeeId = byName.get(ynabPayee.name)?.id;
+      if (!actualPayeeId) {
+        actualPayeeId = await actual.createPayee({
+          name: ynabPayee.name,
         });
-        entityIdMap.set(payee.id, id);
       }
-    }),
-  );
+      entityIdMap.set(ynabPayee.id, actualPayeeId);
+    }
+  });
 }
 
 async function importTransactions(
@@ -226,7 +190,7 @@ async function importTransactions(
 
     if (
       transaction.transfer_account_id &&
-      !transaction.transfer_transaction_id
+        !transaction.transfer_transaction_id
     ) {
       const key =
             transaction.account_id + '#' + transaction.transfer_account_id;
@@ -253,9 +217,9 @@ async function importTransactions(
   const orphanSubtransferMap = orphanSubtransfer.reduce(
     (map, subtransaction) => {
       const key =
-        subtransaction.transfer_account_id +
-        '#' +
-          orphanSubtransferAcctIdByTrxIdMap.get(subtransaction.transaction_id);
+            subtransaction.transfer_account_id +
+              '#' +
+              orphanSubtransferAcctIdByTrxIdMap.get(subtransaction.transaction_id);
       const orphans = map.get(key)
       if (orphans === undefined) {
         map.set(key, [subtransaction]);
@@ -279,13 +243,13 @@ async function importTransactions(
     // YNAB5.Subtransaction (missing that date attribute)
 
     const date_a =
-      'date' in a
-        ? a.date
-        : orphanSubtransferDateByTrxIdMap.get(a.transaction_id) as string;
+          'date' in a
+            ? a.date
+            : orphanSubtransferDateByTrxIdMap.get(a.transaction_id) as string;
     const date_b =
-      'date' in b
-        ? b.date
-        : orphanSubtransferDateByTrxIdMap.get(b.transaction_id) as string;
+          'date' in b
+            ? b.date
+            : orphanSubtransferDateByTrxIdMap.get(b.transaction_id) as string;
     // A transaction and the related subtransaction have inverted amounts.
     // To have those in the same order, the subtransaction has to be reversed
     // to have the same amount.
@@ -350,7 +314,7 @@ async function importTransactions(
         }
       } while (
         transactionIdx < transactions.length &&
-        subtransactionIdx < subtransactions.length
+          subtransactionIdx < subtransactions.length
       );
     }
   });
@@ -380,21 +344,21 @@ async function importTransactions(
             imported_id: transaction.import_id || null,
             transfer_id:
               entityIdMap.get(transaction.transfer_transaction_id) ||
-              orphanTrxIdSubtrxIdMap.get(transaction.id) ||
-              null,
+                orphanTrxIdSubtrxIdMap.get(transaction.id) ||
+                null,
             subtransactions: subtransactions
               ? subtransactions.map(subtrans => {
-                  return {
-                    id: entityIdMap.get(subtrans.id),
-                    amount: amountFromYnab(subtrans.amount),
-                    category: entityIdMap.get(subtrans.category_id) || null,
-                    notes: subtrans.memo,
-                    transfer_id:
+                return {
+                  id: entityIdMap.get(subtrans.id),
+                  amount: amountFromYnab(subtrans.amount),
+                  category: entityIdMap.get(subtrans.category_id) || null,
+                  notes: subtrans.memo,
+                  transfer_id:
                       orphanTrxIdSubtrxIdMap.get(subtrans.id) || null,
-                    payee: null,
-                    imported_payee: null,
-                  };
-                })
+                  payee: null,
+                  imported_payee: null,
+                };
+              })
               : null,
             payee: null,
             imported_payee: null,
@@ -409,33 +373,33 @@ async function importTransactions(
               const mappedTransferAccountId = entityIdMap.get(
                 trx.transfer_account_id,
               ) as string;
-	      // @ts-expect-error: fast and loose
+              // @ts-expect-error: fast and loose
               newTrx.payee = payeeTransferAcctHashMap.get(
                 mappedTransferAccountId
               )?.id;
             } else {
               newTrx.payee = entityIdMap.get(trx.payee_id) as string;
-	      // @ts-expect-error: fast and loose
+              // @ts-expect-error: fast and loose
               newTrx.imported_payee = data.payees.find(
                 p => !p.deleted && p.id === trx.payee_id,
               )?.name;
             }
           };
 
-	  // @ts-expect-error: fast and loose
+          // @ts-expect-error: fast and loose
           transactionPayeeUpdate(transaction, newTransaction);
           newTransaction.subtransactions?.forEach(subtrans => {
             const newSubtransaction = newTransaction.subtransactions?.find(
               newSubtrans => newSubtrans.id === entityIdMap.get(subtrans.id as string),
             );
-	    // @ts-expect-error: fast and loose
+            // @ts-expect-error: fast and loose
             transactionPayeeUpdate(subtrans, newSubtransaction);
           });
 
           // Handle starting balances
           if (
             transaction.payee_id === startingPayeeYNAB &&
-            entityIdMap.get(transaction.category_id) === incomeCatId
+              entityIdMap.get(transaction.category_id) === incomeCatId
           ) {
             newTransaction.category = startingBalanceCatId;
             newTransaction.payee = null;
@@ -486,8 +450,8 @@ async function importBudgets(
 
           if (
             !catId ||
-            catBudget.category_group_id === internalCatIdYnab ||
-            catBudget.category_group_id === creditcardCatIdYnab
+              catBudget.category_group_id === internalCatIdYnab ||
+              catBudget.category_group_id === creditcardCatIdYnab
           ) {
             return;
           }
@@ -503,17 +467,17 @@ async function importBudgets(
 
 async function doImport(data: YNAB5.Budget) {
   throw new Error("not implemented need to avoid just adding everything unconditionally!");
-  // @ts-expect-error: TODO
+  // @ts-expect-error: TODO: remove throw above
   const entityIdMap = new Map<string, string>();
 
-  console.log('Importing Accounts...');
-  await importAccounts(data, entityIdMap);
+  console.log('Importing/mapping Accounts...');
+  await importOrMapAccounts(data, entityIdMap);
 
   console.log('Importing Categories...');
   await importCategories(data, entityIdMap);
 
-  console.log('Importing Payees...');
-  await importPayees(data, entityIdMap);
+  console.log('Importing/mapping Payees...');
+  await importOrMapPayees(data, entityIdMap);
 
   console.log('Importing Transactions...');
   await importTransactions(data, entityIdMap);

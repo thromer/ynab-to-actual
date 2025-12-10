@@ -16,6 +16,11 @@ source budget actually had duplicate category group names and
 duplicate categories. (In that case you should probably rename them in
 YNAB before producing your json file).
 
+Assumptions:
+* initial import included all category groups and categories, but
+  *not* necessarily all accounts and payees.
+* no overlap between original set of transactions and new set of transactions
+
 ## Importer code
 
 * https://github.com/actualbudget/actual/blob/master/packages/loot-core/src/server/importers/ynab5.ts
