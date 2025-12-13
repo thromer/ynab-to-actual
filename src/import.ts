@@ -28,9 +28,9 @@ async function importOrMapAccounts(data: YNAB5.Budget, entityIdMap: Map<string, 
           offbudget: ynabAccount.on_budget ? false : true,
           closed: ynabAccount.closed,
         });
-        entityIdMap.set(ynabAccount.id, actualAccountId);
         console.log(`Added account ${ynabAccount.name}`);
       }
+      entityIdMap.set(ynabAccount.id, actualAccountId);
     }
   });
 }
@@ -320,8 +320,11 @@ async function importTransactions(
     }
   });
 
+  const accountIdToName = new Map(data.accounts.map(a => [a.id, a.name]));
   await Promise.all(
     [...transactionsGrouped.keys()].map(async accountId => {
+      const accountName = accountIdToName.get(accountId ?? "");
+      console.log(`working on ${accountName}`);
       const transactions = transactionsGrouped.get(accountId) as YNAB5.Transaction[];
 
       const toImport = transactions
@@ -389,13 +392,15 @@ async function importTransactions(
 
           // @ts-expect-error: fast and loose
           transactionPayeeUpdate(transaction, newTransaction);
-          newTransaction.subtransactions?.forEach(subtrans => {
-            const newSubtransaction = newTransaction.subtransactions?.find(
-              newSubtrans => newSubtrans.id === entityIdMap.get(subtrans.id as string),
-            );
-            // @ts-expect-error: fast and loose
-            transactionPayeeUpdate(subtrans, newSubtransaction);
-          });
+          if (newTransaction.subtransactions) {
+            subtransactions?.forEach(subtrans => {
+              const newSubtransaction = newTransaction.subtransactions?.find(
+                newSubtrans => newSubtrans.id === entityIdMap.get(subtrans.id as string),
+              );
+              // @ts-expect-error: fast and loose
+              transactionPayeeUpdate(subtrans, newSubtransaction);
+            });
+          }
 
           // Handle starting balances
           if (
@@ -409,12 +414,12 @@ async function importTransactions(
         })
         .filter(x => x);
 
-      console.log(`Importing ${toImport.length} transactions for account ${accountId}`);
+      console.log(`Importing ${toImport.length} transactions for account ${accountName}`);
       // @ts-expect-error: fast and loose
       await actual.addTransactions(entityIdMap.get(accountId) as string, toImport, {
         learnCategories: true,
       });
-      console.log(`Imported ${toImport.length} transactions for account ${accountId}`);
+      console.log(`Imported ${toImport.length} transactions for ${accountName}`);
     }),
   );
   console.log('Imported all');
