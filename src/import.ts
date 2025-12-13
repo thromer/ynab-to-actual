@@ -409,12 +409,15 @@ async function importTransactions(
         })
         .filter(x => x);
 
+      console.log(`Importing ${toImport.length} transactions for account ${accountId}`);
       // @ts-expect-error: fast and loose
       await actual.addTransactions(entityIdMap.get(accountId) as string, toImport, {
         learnCategories: true,
       });
+      console.log(`Imported ${toImport.length} transactions for account ${accountId}`);
     }),
   );
+  console.log('Imported all');
 }
 
 async function importBudgets(
