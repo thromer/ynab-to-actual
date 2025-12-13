@@ -28,8 +28,9 @@ async function importOrMapAccounts(data: YNAB5.Budget, entityIdMap: Map<string, 
           offbudget: ynabAccount.on_budget ? false : true,
           closed: ynabAccount.closed,
         });
+        entityIdMap.set(ynabAccount.id, actualAccountId);
+        console.log(`Added account ${ynabAccount.name}`);
       }
-      entityIdMap.set(ynabAccount.id, actualAccountId);
     }
   });
 }
@@ -466,8 +467,6 @@ async function importBudgets(
 // Utils
 
 async function doImport(data: YNAB5.Budget) {
-  throw new Error("not implemented need to avoid just adding everything unconditionally!");
-  // @ts-expect-error: TODO: remove throw above
   const entityIdMap = new Map<string, string>();
 
   console.log('Importing/mapping Accounts...');
@@ -488,16 +487,21 @@ async function doImport(data: YNAB5.Budget) {
   console.log('... import complete!');
 }
 
-function parseFile(buffer: Buffer): YNAB5.Budget {
-  let data = JSON.parse(buffer.toString());
-  if (data.data) {
-    data = data.data;
-  }
-  if (data.budget) {
-    data = data.budget;
-  }
+// function parseFile(buffer: Buffer): YNAB5.Budget {
+//   let data = JSON.parse(buffer.toString());
+//   if (data.data) {
+//     data = data.data;
+//   }
+//   if (data.budget) {
+//     data = data.budget;
+//   }
+//
+//   return data;
+// }
 
-  return data;
+async function parseFile(infile: string | FileHandle): Promise<YNAB5.Budget> {
+  const fileContent = await readFile(infile, 'utf-8');
+  return JSON.parse(fileContent).data.budget;
 }
 
 function equalsIgnoreCase(stringa: string, stringb: string): boolean {
@@ -587,7 +591,7 @@ program
   .requiredOption('-b, --budget <str>', 'Budget name')
   .requiredOption('-f, --file <str>', 'Input JSON file')
   .action(async (options: {budget: string, file: string}) => {
-    const ynab = parseFile(Buffer.from(await readFile(options.file, 'binary')));
+    const ynab: YNAB5.Budget = await parseFile(options.file);
     withActual(options.budget, async () => {
       doImport(ynab);
     });
